@@ -312,6 +312,7 @@ static CQ_ITEM *cqi_new(void) {
     }
     pthread_mutex_unlock(&cqi_freelist_lock);
 
+    /* Batch allocation */
     if (NULL == item) {
         int i;
 
@@ -379,10 +380,13 @@ void accept_new_conns(const bool do_accept) {
 }
 /****************************** LIBEVENT THREADS *****************************/
 
+
+/* 设置thread结构体 */
 /*
  * Set up a thread's information.
  */
 static void setup_thread(LIBEVENT_THREAD *me) {
+/* 实例化libevent对象 */
 #if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
     struct event_config *ev_config;
     ev_config = event_config_new();
@@ -398,6 +402,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(1);
     }
 
+    /* 设置回调函数：监听来自master线程或者是连接的消息 */
     /* Listen for notifications from other threads */
     event_set(&me->notify_event, me->notify_receive_fd,
               EV_READ | EV_PERSIST, thread_libevent_process, me);
@@ -408,6 +413,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(1);
     }
 
+    /* 初始化连接队列，master线程把建立的连接放在队列中 */
     me->new_conn_queue = malloc(sizeof(struct conn_queue));
     if (me->new_conn_queue == NULL) {
         perror("Failed to allocate memory for connection queue");
@@ -470,6 +476,7 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 #endif
 }
 
+/* 进入主事件循环 */
 /*
  * Worker thread: main event loop
  */
@@ -519,6 +526,7 @@ static void thread_libevent_process(evutil_socket_t fd, short which, void *arg) 
     }
 
     switch (buf[0]) {
+    /* 来自客户端的通知：队列中放入了一个连接，从队列中取出连接并创建连接结构体，监听该连接的请求 */
     case 'c':
         item = cq_pop(me->new_conn_queue);
 
@@ -864,6 +872,7 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
     }
 }
 
+/* 创建工作nthreads个工作线程 */
 /*
  * Initializes the thread subsystem, creating various worker threads.
  *
@@ -919,12 +928,14 @@ void memcached_thread_init(int nthreads, void *arg) {
         pthread_mutex_init(&item_locks[i], NULL);
     }
 
+    /* 分配线程数组 */
     threads = calloc(nthreads, sizeof(LIBEVENT_THREAD));
     if (! threads) {
         perror("Can't allocate thread descriptors");
         exit(1);
     }
 
+    /* 创建管道 */
     for (i = 0; i < nthreads; i++) {
         int fds[2];
         if (pipe(fds)) {
@@ -937,16 +948,19 @@ void memcached_thread_init(int nthreads, void *arg) {
 #ifdef EXTSTORE
         threads[i].storage = arg;
 #endif
+        /* 初始化线程 */
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */
         stats_state.reserved_fds += 5;
     }
 
+    /* 创建工作线程，让每个线程进入事件循环 */
     /* Create threads after we've done all the libevent setup. */
     for (i = 0; i < nthreads; i++) {
         create_worker(worker_libevent, &threads[i]);
     }
 
+    /* 让worker线程等待信号通知 */
     /* Wait for all the threads to set themselves up before returning. */
     pthread_mutex_lock(&init_lock);
     wait_for_thread_registration(nthreads);

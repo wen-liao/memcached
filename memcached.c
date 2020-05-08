@@ -581,6 +581,7 @@ void conn_worker_readd(conn *c) {
 #endif
 }
 
+/* 监听来自sfd的请求：分配conn结构体并设置状态，关联到base的事件循环中，回调函数为event_handler */
 conn *conn_new(const int sfd, enum conn_states init_state,
                 const int event_flags,
                 const int read_buffer_size, enum network_transport transport,
@@ -7078,6 +7079,7 @@ static int read_into_chunked_item(conn *c) {
     return total;
 }
 
+/* 采用了状态模式，通过c的状态决定要做什么 */
 static void drive_machine(conn *c) {
     bool stop = false;
     int sfd;
@@ -7096,7 +7098,9 @@ static void drive_machine(conn *c) {
 
     while (!stop) {
 
+        /* 判断c的状态 */
         switch(c->state) {
+        /* 监听套接字：接受连接 */
         case conn_listening:
             addrlen = sizeof(addr);
 #ifdef HAVE_ACCEPT4
@@ -7195,7 +7199,7 @@ static void drive_machine(conn *c) {
                 }
                 ssl_v = (void*) ssl;
 #endif
-
+                /* 采用轮转法把连接放在对应的线程的队列中，并通过管道通知线程 */
                 dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
                                      READ_BUFFER_CACHED, c->transport, ssl_v);
             }
@@ -7217,6 +7221,7 @@ static void drive_machine(conn *c) {
             break;
 
         case conn_read:
+            //read data from the connection and cach in the buffer
             if (!IS_UDP(c->transport)) {
                 // Assign a read buffer if necessary.
                 if (!rbuf_alloc(c)) {
@@ -7496,6 +7501,7 @@ static void drive_machine(conn *c) {
     return;
 }
 
+/* 处理某个连接上的事件由drive_machine函数完成 */
 void event_handler(const evutil_socket_t fd, const short which, void *arg) {
     conn *c;
 
@@ -7574,6 +7580,8 @@ static void maximize_sndbuf(const int sfd) {
         fprintf(stderr, "<%d send buffer was %d, now %d\n", sfd, old_size, last_good);
 }
 
+/* 创建监听套接字，绑定端口并注册 */
+/* socket -> bind -> listen -> accept */
 /**
  * Create a socket and bind it to a specific port number
  * @param interface the interface to bind to
@@ -7743,6 +7751,7 @@ static int server_socket(const char *interface,
     return success == 0;
 }
 
+/* 逐个创建监听套接字 */
 static int server_sockets(int port, enum network_transport transport,
                           FILE *portnumber_file) {
     bool ssl_enabled = false;
@@ -10022,6 +10031,7 @@ int main (int argc, char **argv) {
 #endif
     }
 
+    /* 初始化主线程的libevent实例，主线程中监听套接字监听客户端请求并建立连接套接字，通过轮转算法交给工作线程处理*/
     /* initialize main thread libevent instance */
 #if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
     /* If libevent version is larger/equal to 2.0.2-alpha, use newer version */
@@ -10064,6 +10074,7 @@ int main (int argc, char **argv) {
     /* initialize other stuff */
     stats_init();
     logger_init();
+    /* 分配连接数组 */
     conn_init();
     bool reuse_mem = false;
     void *mem_base = NULL;
@@ -10153,6 +10164,7 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+    /* 创建工作线程 */
     /* start up worker threads if MT mode */
 #ifdef EXTSTORE
     slabs_set_storage(storage);
@@ -10251,6 +10263,7 @@ int main (int argc, char **argv) {
         }
 
         errno = 0;
+        /* 创建监听套接字并注册到libevent实例当中 */
         if (settings.port && server_sockets(settings.port, tcp_transport,
                                            portnumber_file)) {
             vperror("failed to listen on TCP port %d", settings.port);
@@ -10301,6 +10314,7 @@ int main (int argc, char **argv) {
     /* Initialize the uriencode lookup table. */
     uriencode_init();
 
+    /* 开始事件循环 */
     /* enter the event loop */
     while (!stop_main_loop) {
         if (event_base_loop(main_base, EVLOOP_ONCE) != 0) {
