@@ -606,6 +606,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         c->rbuf = NULL;
 
         c->rsize = read_buffer_size;
+        c->tenant_stats_ix = -1;
 
         // UDP connections use a persistent static buffer.
         if (c->rsize) {
@@ -3936,8 +3937,354 @@ static inline int _get_extstore(conn *c, item *it, mc_resp *resp) {
 }
 #endif
 
+/**
+ * Predictive models
+ * 1. Inputs and outputs
+ * */
+
+static inline Input *newInput(){
+    return (Input *) malloc(sizeof(Input));
+}
+
+static inline void initializeInput(Input* input, double get_ratio, double theta, double key_size, double value_size){
+    input->get_ratio = get_ratio;
+    input->theta = theta;
+    input->key_size = key_size;
+    input->value_size = value_size;
+}
+
+static inline void freeInput(Input* input){
+    free(input);
+}
+
+static inline Output *newOutput(){
+    return (Output *) malloc(sizeof(Output));
+}
+
+static inline void freeOutput(Output *output){
+    free(output);
+}
+
+/**
+ * 2. Models
+ * 2.1 linear regression
+ * */
+
+const double RIDGE_REGRESSION_WS[] = {
+        0.00000000e+00, -1.32766739e+03,  2.23950184e+03, -3.35896286e+00,
+       -4.02373031e+00, -2.97676047e+03, -4.15128091e+03, -1.55201506e+01,
+       -7.11721477e-01, -1.12902007e+04, -1.41820850e+01,  3.60534464e-01,
+        8.02616604e-02,  1.12823806e-02,  3.90135053e-03,  1.53941135e+04,
+        5.95501699e+02,  9.57629230e+00,  2.31345514e-01,  1.11030880e+04,
+        5.52478818e+01, -1.70509777e-01,  9.09642696e-03,  2.67336802e-03,
+        7.86766035e-04,  2.82564603e+04,  8.12297561e+00, -2.72760917e-01,
+       -7.81510029e-02, -8.22081675e-04, -2.87486083e-04, -8.75610138e-04,
+       -1.16499951e-05, -5.94221396e-06, -1.80390888e-06, -2.11515228e+04,
+        3.81504389e+03, -1.59812234e+01,  3.16976395e-01, -8.19982355e+03,
+       -3.58946665e+01,  7.42249631e-01,  1.50021265e-01, -2.59157014e-03,
+       -2.44608117e-04, -1.01847074e+04, -1.82332432e+01, -4.36953474e-01,
+       -3.08983661e-01, -7.72466438e-04,  5.01162202e-05,  1.62747205e-05,
+        1.50374590e-05, -7.83385831e-07, -1.70383181e-07, -3.24433002e+04,
+       -7.09509375e+00,  1.26265402e+00, -1.21487288e-01, -2.31509957e-03,
+       -7.38756309e-05,  2.16981005e-03,  1.86353186e-05,  3.24797465e-07,
+        7.14502213e-08,  2.48080702e-06, -1.12996619e-07,  4.18386806e-09,
+        1.19928326e-09,  3.47048192e-10,  9.26658802e+03, -2.94470021e+03,
+        1.09059821e+01, -1.25466445e-01,  5.59825336e+03,  1.57061461e+01,
+       -6.12608528e-01, -7.97266617e-02,  7.61983425e-04,  2.61480366e-05,
+       -1.00921535e+03, -4.86922189e+00,  9.82880861e-02,  5.22024591e-02,
+        1.15601265e-04,  1.11039531e-05, -1.09810215e-04, -2.36165827e-06,
+        2.05626359e-07,  1.66263377e-08,  5.70003706e+03,  1.89968309e+01,
+        1.66452139e-02, -9.30689317e-04,  7.40011450e-05,  2.15214212e-05,
+        6.19128088e-04,  2.50142518e-06, -1.02031179e-08, -5.89357466e-09,
+       -4.10220619e-07, -2.98699596e-08, -3.49432583e-10,  5.11321400e-11,
+        1.10651725e-11,  1.29445693e+04,  3.32997146e+01, -8.26891993e-01,
+       -2.11641250e-01, -2.16951803e-03,  3.67441795e-05,  9.60354986e-04,
+        1.25980870e-05,  1.95596144e-07,  1.34114124e-09, -7.18066948e-06,
+       -6.82452194e-08, -6.75640684e-10, -2.42717873e-11, -4.89784951e-12,
+       -3.41096715e-10,  3.42976920e-10,  1.94176612e-12, -3.36768515e-13,
+       -7.63013115e-14, -2.17570252e-14
+};
+
+const double RIDGE_REGRESSION_INTERCEPT = 2460.923078957536;
+
+const double LASSO_REGRESSION_WS[] = {
+        0.00000000e+00, -1.29477948e+03,  2.32417402e+03, -3.31800794e+00,
+       -4.02196501e+00, -3.14881002e+03, -4.25762215e+03, -1.56192371e+01,
+       -7.11361011e-01, -1.17975964e+04, -1.42834866e+01,  3.60161067e-01,
+        7.90627804e-02,  1.12750477e-02,  3.89945213e-03,  1.57834430e+04,
+        7.33068297e+02,  9.76454114e+00,  2.27499863e-01,  1.13688998e+04,
+        5.54138931e+01, -1.70810960e-01,  9.44918295e-03,  2.67307925e-03,
+        7.87486092e-04,  2.94211322e+04,  8.39752860e+00, -2.72717070e-01,
+       -7.81447217e-02, -8.27911573e-04, -2.87000516e-04, -8.53266257e-04,
+       -1.16914443e-05, -5.93699490e-06, -1.80311264e-06, -2.15373758e+04,
+        3.70617176e+03, -1.61628421e+01,  3.19421785e-01, -8.32871793e+03,
+       -3.60204284e+01,  7.44536241e-01,  1.49656651e-01, -2.58679356e-03,
+       -2.44530977e-04, -1.04763427e+04, -1.83921732e+01, -4.36778944e-01,
+       -3.09203753e-01, -7.69363501e-04,  4.98523214e-05,  1.54550624e-05,
+        1.50630178e-05, -7.84627099e-07, -1.70529235e-07, -3.35905143e+04,
+       -7.38796080e+00,  1.26019461e+00, -1.21825457e-01, -2.30615612e-03,
+       -7.35993037e-05,  2.17146391e-03,  1.86722863e-05,  3.23889045e-07,
+        7.13254312e-08,  2.32380069e-06, -1.12734390e-07,  4.17603286e-09,
+        1.19861149e-09,  3.46903457e-10,  9.40502319e+03, -2.90811268e+03,
+        1.09857668e+01, -1.25439731e-01,  5.63030320e+03,  1.57361620e+01,
+       -6.14297055e-01, -7.97106144e-02,  7.59953769e-04,  2.60612363e-05,
+       -9.62026853e+02, -4.82200362e+00,  9.86373660e-02,  5.23244625e-02,
+        1.16517398e-04,  1.11423271e-05, -1.09153280e-04, -2.36412673e-06,
+        2.05241957e-07,  1.66315465e-08,  5.81554205e+03,  1.90529599e+01,
+        1.62400127e-02, -8.42634769e-04,  7.21058835e-05,  2.15658170e-05,
+        6.19062034e-04,  2.49461690e-06, -1.03924391e-08, -5.88008834e-09,
+       -4.09193368e-07, -2.99574123e-08, -3.47686688e-10,  5.12425258e-11,
+        1.10739866e-11,  1.33530597e+04,  3.34108476e+01, -8.25085023e-01,
+       -2.11525607e-01, -2.17203521e-03,  3.66793937e-05,  9.60726512e-04,
+        1.25891006e-05,  1.95354162e-07,  1.32339120e-09, -7.18515303e-06,
+       -6.83397086e-08, -6.73872106e-10, -2.41999734e-11, -4.88866244e-12,
+        0.00000000e+00,  3.42723086e-10,  1.93966075e-12, -3.36229598e-13,
+       -7.62739601e-14, -2.17481980e-14
+};
+
+const double LASSO_RIGRESSION_INTERCEPT = 2457.4449857358977;
+
+//const double POLYNOMIAL_FEATURES[sizeof(RIDGE_REGRESSION_WS)/ sizeof(double)];
+
+static inline void RegressionWith5thDegreePolynomial(const double Ws[], double intercept, const Input * input, Output * output){
+    //printf("%ld\n", sizeof(RIDGE_REGRESSION_WS)/sizeof(double));
+    const double * Xs = input->Xs;
+    //printf("%lf %lf %lf %lf\n", Xs[0], Xs[1], Xs[2], Xs[3]);
+
+    output->MOPS = intercept;
+
+    int ix = 0;
+    //POLYNOMIAL_FEATURES[ix++] = 1.;
+    //printf("%lf ", 1.);
+    output->MOPS += Ws[ix++];
+    
+    //1-degree polynomials
+    for(int i = 0;i < 4; ++i){
+        double feature = Xs[i];
+        //printf("%lf ", feature);
+        output->MOPS += Ws[ix++] * feature;
+        //if (ix%4 == 0) printf("\n");
+        //POLYNOMIAL_FEATURES[ix] = Ws[ix] * Xs[i];
+        //ix ++;
+    }
+    //printf("%d\n", ix);
+
+    //2-degree polynomials
+    for(int i = 0; i < 4; ++i)
+        for(int j = i; j < 4; ++j){
+            double feature = Xs[i] * Xs[j];
+            //printf("%lf ", feature);
+            output->MOPS += Ws[ix++] * feature;
+            //POLYNOMIAL_FEATURES[ix] = Ws[ix] * Xs[i] * Xs[j];
+            //ix ++;
+            //if (ix%4 == 0) printf("\n");
+        }
+    //printf("%d\n", ix);
+    
+    //3-degree polynomials
+    for(int i = 0; i < 4; ++i)
+        for(int j = i; j < 4; ++j)
+            for(int k = j; k < 4; ++k){
+                double feature = Xs[i] * Xs[j] * Xs[k];
+                //printf("%lf ", feature);
+                output->MOPS += Ws[ix++] * feature;
+                //if (ix%4 == 0) printf("\n");
+            }
+    //printf("%d\n", ix);
+
+    //4-degree polynomials
+    for(int i = 0; i < 4; ++i)
+        for(int j = i; j < 4; ++j)
+            for(int k = j; k < 4; ++k)
+                for(int l = k; l < 4; ++l){
+                    double feature = Xs[i] * Xs[j] * Xs[k] * Xs[l];
+                    //printf("%lf ", feature);
+                    output->MOPS += Ws[ix++] * feature;
+                    //if (ix%4 == 0) printf("\n");
+                }
+    //printf("%d\n", ix);
+
+    //5-degree polynomials
+    for(int i = 0; i < 4; ++i)
+        for(int j = i; j < 4; ++j)
+            for(int k = j; k < 4; ++k)
+                for(int l = k; l < 4; ++l)
+                    for(int m = l; m < 4; ++m){
+                        double feature = Xs[i] * Xs[j] * Xs[k] * Xs[l] * Xs[m];
+                        //printf("%lf ", feature);
+                        output->MOPS += Ws[ix++] * feature;
+                        //if (ix%4 == 0) printf("\n");
+                    }
+    //printf("%d\n", ix);
+}
+
+static inline void RidgeRegressionWith5thDegreePolynomial(const Input * input, Output * output){
+    RegressionWith5thDegreePolynomial(RIDGE_REGRESSION_WS, RIDGE_REGRESSION_INTERCEPT, input, output);
+}
+
+static inline void LASSORegressionWith5thDegreePolynomial(const Input * input, Output * output){
+    RegressionWith5thDegreePolynomial(LASSO_REGRESSION_WS, LASSO_RIGRESSION_INTERCEPT, input, output);
+}
+
+/**
+ * User statistics & information
+ * */
+
+static TenantStas tenant_stats;
+
+pthread_mutex_t tenant_stats_mutex;
+
+static Model model = RidgeRegressionWith5thDegreePolynomial;
+
+static Input input;
+
+static Output output;
+
+/*
+extern int register_tenant(unsigned tenant, double percentage){
+    if(percentage < 0 || percentage + tenant_stats.allocated_throughput_percentage  > 1)
+        return -1;
+}
+*/
+
+static inline void init_tenant_stats_lock(){
+    if(pthread_mutex_init(&tenant_stats_mutex, NULL) != 0){
+        fprintf(stderr, "Can't initialize mutex lock\n");
+        exit(1);
+    }
+}
+
+static inline void lock_tenant_stats(){
+    pthread_mutex_lock(&tenant_stats_mutex);
+}
+
+static inline void unlock_tenant_stats(){
+    pthread_mutex_unlock(&tenant_stats_mutex);
+}
+
+static inline int hex2dec(const char c){
+    if(c >= '0' && c <= '9')
+        return c - '0';
+    else if(c >= 'A' && c <= 'E')
+        return c - 'A';
+    else if(c >= 'a' && c <= 'e')
+        return c - 'a';
+    return -1;
+}
+
+static inline void parse_tenant_id(char* tenant_id, const char* c){
+    memcpy(tenant_id, c, 4);
+}
+
+static bool tenant_id_equals(tenant_id_type a, tenant_id_type b){
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+/*
+* 注册假定：每个连接由单个租户使用
+*/
+static int find_tenant_stats_ix(tenant_id_type tenant_id){
+    for(int ix = 0; ix < tenant_stats.tenant_num; ++ix)
+        if(tenant_id_equals(tenant_stats.data[ix].tenant_id, tenant_id))
+            return ix;
+    if(tenant_stats.tenant_num == MAX_TENANTS_NUM)
+        return -1;
+    tenant_stats.tenant_num += 1;
+    int index = tenant_stats.tenant_num - 1;
+    tenant_stats.data[index].MAX_OPS = INITIAL_MOPS;
+    return index;
+}
+
+static void predict_MOPS_and_update(){
+    for(int i = 0;i < tenant_stats.tenant_num; ++i){
+        TenantStat * tenant_stat = tenant_stats.data + i;
+        if(tenant_stat->total_ops_num == 0)
+            continue;
+        input.get_ratio = 1.0 * tenant_stat->get_ops_num / tenant_stat->total_ops_num;
+        input.theta = 0.5;//TODO: data skewness
+        input.key_size = 1.0 * tenant_stat->key_size_sum / tenant_stat->total_ops_num;
+        input.value_size = 1.0 * tenant_stat->value_size_sum / tenant_stat->total_ops_num;
+        model(&input, &output);
+        tenant_stats.data[i].MAX_OPS = output.MOPS;
+        tenant_stat->get_ops_num = 0;
+        tenant_stat->key_size_sum = 0;
+        tenant_stat->value_size_sum = 0;
+        tenant_stat->total_ops_num = 0;
+    }
+}
+
+/**
+ *TODO: 预测
+ * 1. 初始化锁和libevent实例，注册定时事件：读取当前的记录并计算MOPS，如果没有记录就保持之前的统计值
+ * 2. 创建prediction线程，进入注册事件的主循环
+*/
+
+struct event_base *predict_base;
+struct event predict_timeout_event;
+struct timeval tv;
+
+static void predict_timer_cb(int fd, short event, void *arg)    //回调函数
+{
+        //printf("predict_timer_cb\n");
+        predict_MOPS_and_update();
+        event_add(&predict_timeout_event, &tv);    //重新注册
+}
+
+
+static void set_up_predict_base(){
+    /* 实例化libevent对象 */
+#if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
+    struct event_config *ev_config;
+    ev_config = event_config_new();
+    event_config_set_flag(ev_config, EVENT_BASE_FLAG_NOLOCK);
+    predict_base = event_base_new_with_config(ev_config);
+    event_config_free(ev_config);
+#else
+    predict_base = event_init();
+#endif
+
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;//PREDICT_INTERVAL * 1000;
+
+    event_set(&predict_timeout_event, -1, 0, predict_timer_cb, NULL);  //初始化event结构中成员
+    event_base_set(predict_base, &predict_timeout_event);
+    event_add(&predict_timeout_event, &tv);  //将event添加到events事件链表，注册事件
+}
+
+static void init_predict_thread(){
+    init_tenant_stats_lock();
+    set_up_predict_base();
+}
+
+/**
+ * 2. 创建prediction线程，进入注册事件的主循环
+*/
+
+static void* predict_libevent(void* arg){
+    event_base_dispatch(predict_base);
+    event_base_free(predict_base);
+    return NULL;
+}
+
+static void create_predict_thread(){
+    pthread_attr_t  attr;
+    int             ret;
+    pthread_t thread_id;
+
+    pthread_attr_init(&attr);
+
+    if ((ret = pthread_create(&thread_id, &attr, predict_libevent, NULL)) != 0) {
+        fprintf(stderr, "Can't create thread: %s\n",
+                strerror(ret));
+        exit(1);
+    }
+}
+
 /* ntokens is overwritten here... shrug.. */
 static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas, bool should_touch) {
+    tenant_id_type tenant_id;
+    tenant_ix_type tenant_stats_ix;
+    TenantStat * tenant_stat;
     char *key;
     size_t nkey;
     item *it;
@@ -3945,6 +4292,8 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
     int32_t exptime_int = 0;
     rel_time_t exptime = 0;
     bool fail_length = false;
+    bool max_tenant_num_reached = false;
+    bool MOPS_reached = false;
     assert(c != NULL);
     mc_resp *resp = c->resp;
 
@@ -3958,11 +4307,76 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
         exptime = realtime(EXPTIME_TO_POSITIVE_TIME(exptime_int));
     }
 
+
+    /**
+     * 性能隔离策略：
+     * 1. 判断用户是否注册，如果没有的话尝试注册
+     * //TODO: 优化方案
+     * 1. 锁优化
+     * 2. 更早拦截
+     * */
+    //printf("process_get_command\n");
+
+    lock_tenant_stats();
+
+    //printf("register the tenant\n");
+
+    parse_tenant_id(tenant_id, key_token->value);
+    
+    /* 连接刚建立，还没有对应的租户 */
+    if(c->tenant_id[0] == '\0'){
+        //TODO: register in the queue
+        if((tenant_stats_ix = find_tenant_stats_ix(tenant_id)) == -1){
+            max_tenant_num_reached = true;
+            goto stop;
+        }
+        memcpy(c->tenant_id, tenant_id, 4);
+        c->tenant_stats_ix = tenant_stats_ix;
+    }else if(!tenant_id_equals(tenant_id, c->tenant_id)){
+        fail_length = true;
+        goto stop;
+    }
+
+    /**
+     * 2. 判断是否达到了MOPS上限，如果达到，拦截此次请求即可
+     * */
+    
+    //printf("block the request\n");
+
+    tenant_stat = tenant_stats.data + c->tenant_stats_ix;
+    //printf("%d %d\n", tenant_stat->MAX_OPS, tenant_stat->total_ops_num);
+    if(tenant_stat->MAX_OPS <= (tenant_stat->total_ops_num + 1)){
+        MOPS_reached = true;
+        goto stop;
+    }
+
+    /**
+     * 3. 如果没有达到，更新统计数据
+     * //TODO: 优化方案
+     * 1. 锁优化
+     * 2. 更早拦截
+     * */
+    //printf("update the stats\n");
+    nkey = key_token->length;
+    tenant_stat->total_ops_num ++;
+    tenant_stat->get_ops_num ++;
+    tenant_stat->value_size_sum += nkey;
+
+    unlock_tenant_stats();
+
+    //printf("print the key\n");
+
     do {
         while(key_token->length != 0) {
             bool overflow; // not used here.
+            //TODO: exception handing
             key = key_token->value;
             nkey = key_token->length;
+            /*
+            for(int i = 0; i < nkey; ++i)
+                printf("%c", key[i]);
+            printf("\n");
+            */
 
             if (nkey > KEY_MAX_LENGTH) {
                 fail_length = true;
@@ -4102,6 +4516,10 @@ stop:
         }
         if (fail_length) {
             out_string(c, "CLIENT_ERROR bad command line format");
+        } else if (max_tenant_num_reached) {
+            out_string(c, "SEVERE_ERROR MAX_TENANTS_NUM reached");
+        } else if (MOPS_reached) {
+            out_string(c ,"SEVERE_ERROR MOPS_reached");
         } else {
             out_of_memory(c, "SERVER_ERROR out of memory writing get response");
         }
@@ -5158,6 +5576,9 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     int vlen;
     uint64_t req_cas_id=0;
     item *it;
+    tenant_id_type tenant_id;
+    tenant_ix_type tenant_stats_ix;
+    TenantStat * tenant_stat;
 
     assert(c != NULL);
 
@@ -5177,6 +5598,56 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
+
+    /**
+     * 性能隔离策略：
+     * 1. 判断用户是否注册，如果没有的话尝试注册
+     * //TODO: 优化方案
+     * 1. 锁优化
+     * 2. 更早拦截
+     * */
+    lock_tenant_stats();
+
+    parse_tenant_id(tenant_id, key);
+    
+    if(c->tenant_id[0] == '\0'){
+        //TODO: register in the queue
+        if((tenant_stats_ix = find_tenant_stats_ix(tenant_id)) == -1){
+            out_string(c, "SEVERE_ERROR MAX_TENANT_NUM reached");
+            return;
+        }
+        memcpy(c->tenant_id, tenant_id, 4);
+        c->tenant_stats_ix = tenant_stats_ix;
+    }
+    
+    if(!tenant_id_equals(tenant_id, c->tenant_id)){
+        out_string(c, "CLIENT_ERROR unmatched tenant id");
+        return;
+    }
+
+    /**
+     * 2. 判断是否达到了MOPS上限，如果达到，拦截此次请求即可
+     * */
+    
+    tenant_stat = tenant_stats.data + c->tenant_stats_ix;
+    if(tenant_stat->MAX_OPS <= (tenant_stat->total_ops_num + 1)){
+        out_string(c, "SEVERE_ERROR MOPS reached");
+        return;
+    }
+
+    /**
+     * 3. 如果没有达到，更新统计数据
+     * key size: nkey
+     * value size: vlen
+     * //TODO: 优化方案
+     * 1. 锁优化
+     * 2. 更早拦截
+     * */
+    tenant_stat->total_ops_num ++;
+    tenant_stat->value_size_sum += nkey;
+    tenant_stat->value_size_sum += vlen;
+
+    unlock_tenant_stats();
 
     exptime = realtime(EXPTIME_TO_POSITIVE_TIME(exptime_int));
 
@@ -10313,6 +10784,10 @@ int main (int argc, char **argv) {
 
     /* Initialize the uriencode lookup table. */
     uriencode_init();
+
+    /* Start the prediction thread. */
+    init_predict_thread();
+    create_predict_thread();
 
     /* 开始事件循环 */
     /* enter the event loop */

@@ -507,7 +507,6 @@ static void *worker_libevent(void *arg) {
     return NULL;
 }
 
-
 /*
  * Processes an incoming "handle a new connection" item. This is called when
  * input arrives on the libevent wakeup pipe.

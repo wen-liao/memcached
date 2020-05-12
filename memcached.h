@@ -572,6 +572,95 @@ typedef struct _strchunk {
     char data[];
 } item_chunk;
 
+/**
+ * Predictive models
+ * 1. Inputs and outputs
+ * */
+#include <stdlib.h>
+typedef union {
+    struct {
+        double get_ratio;
+        double theta;
+        double key_size;
+        double value_size;
+    };
+    double Xs[4];
+} Input;
+
+typedef struct{
+    double MOPS;
+} Output;
+
+typedef void (* Model) (const Input *intput, Output *output);
+
+/**
+ * 2. Models
+ * */
+
+
+
+/**
+ * User statistics & information
+ * */
+
+#define MAX_TENANTS_NUM 5
+#define INITIAL_MOPS 500
+
+#define MAX_TENANT_ID 255
+
+typedef char tenant_id_type[4];
+typedef char tenant_ix_type;
+
+enum Operation{
+    GET, PUT
+};
+
+typedef struct{
+    enum Operation operation;
+    const char* key;
+    int key_size;
+    const char* value;
+    int value_size;
+} Request;
+
+typedef struct{
+    tenant_id_type tenant_id;
+    int total_ops_num;
+    int get_ops_num;
+    //total_ops_num = get_ops_num + put_ops_num
+    int key_size_sum;
+    int value_size_sum;
+    int MAX_OPS;//predicted by the model
+    double percentage;//Throughput resources reserved for the tenant
+}TenantStat;
+
+typedef struct{
+    TenantStat data[MAX_TENANTS_NUM];
+    int tenant_num;
+    double allocated_throughput_percentage;
+}TenantStas;
+
+//100ms作为一个定时启动的时间
+#define PREDICT_INTERVAL 500
+
+//return -1 if maximail tenant num is reached or percentage is illegal
+//return 0 if the tenant already exists
+//return 1 if registered successfully
+//int register_tenant(unsigned tenant_id, double percentage);
+
+//return -1 if the tenant id doesn't exist and the maximal tenant num is reached
+//else return the tenent index
+//int find_tenant_index(unsigned tenant_id);
+
+
+//return 1 if the updated successfully
+//return 0 if the request is rejected
+//else return -1
+//int update_stats(int tenant_index, const Request* request);
+
+//int predict_MOPS_and_update();
+
+
 #ifdef NEED_ALIGN
 static inline char *ITEM_schunk(item *it) {
     int offset = it->nkey + 1
@@ -740,6 +829,10 @@ struct conn {
     int keylen;
     conn   *next;     /* Used for generating a list of conn structures */
     LIBEVENT_THREAD *thread; /* Pointer to the thread object serving this connection */
+
+    tenant_id_type tenant_id;
+    tenant_ix_type tenant_stats_ix;
+
     int (*try_read_command)(conn *c); /* pointer for top level input parser */
     ssize_t (*read)(conn  *c, void *buf, size_t count);
     ssize_t (*sendmsg)(conn *c, struct msghdr *msg, int flags);
